@@ -90,8 +90,40 @@ class PortForwardsAPI:
         return entries
     
     def create(self, ip, port):
-        pass
-
+        response = self.__setter(122, {
+            "action": "add",
+            "instance": "",
+            "local_IP": ip,
+            "start_port": port,
+            "end_port": port,
+            "start_portIn": port,
+            "end_portIn": port,
+            "protocol": 3,
+            "enable": 1,
+            "delete": 0,
+            "idd": ""
+        })
+    
+    def delete(self, id):
+        entries = self.get_all()
+        response = self.__setter(122, {
+            "action": "apply",
+            "instance": "*".join([x["id"] for x in entries]),
+            "local_IP": "",
+            "start_port": "",
+            "end_port": "",
+            "start_portIn": "*".join(["" for x in entries]),
+            "end_portIn": "",
+            "protocol": "*".join([x["protocol"] for x in entries]),
+            "enable": "*".join([x["enable"] for x in entries]),
+            "delete": "*".join([("1" if int(x["id"]) == id else "0") for x in entries]),
+            "idd": "*".join(["" for x in entries])
+        })
+        
 api = PortForwardsAPI(config["host"], config["password"])
+
+# api.create("192.168.0.210", 8080)
+
+api.delete(3)
 
 pprint(api.get_all())
