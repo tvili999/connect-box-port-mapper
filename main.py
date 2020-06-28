@@ -88,16 +88,16 @@ class PortForwardsAPI:
             entries.append(entry)
 
         return entries
-    
-    def create(self, ip, port):
+
+    def create(self, mapping):
         response = self.__setter(122, {
             "action": "add",
             "instance": "",
-            "local_IP": ip,
-            "start_port": port,
-            "end_port": port,
-            "start_portIn": port,
-            "end_portIn": port,
+            "local_IP": mapping.ip,
+            "start_port": mapping.port_start_local,
+            "end_port": mapping.port_end_local,
+            "start_portIn": mapping.port_start_global,
+            "end_portIn": mapping.port_end_global,
             "protocol": 3,
             "enable": 1,
             "delete": 0,
@@ -105,6 +105,14 @@ class PortForwardsAPI:
         })
     
     def delete(self, id):
+        ids = None
+        if type(id) is list:
+            ids = id
+        elif type(id) is int:
+            ids = [id]
+        else:
+            return
+
         entries = self.get_all()
         response = self.__setter(122, {
             "action": "apply",
@@ -116,14 +124,187 @@ class PortForwardsAPI:
             "end_portIn": "",
             "protocol": "*".join([x["protocol"] for x in entries]),
             "enable": "*".join([x["enable"] for x in entries]),
-            "delete": "*".join([("1" if int(x["id"]) == id else "0") for x in entries]),
+            "delete": "*".join([("1" if int(x["id"]) in ids else "0") for x in entries]),
             "idd": "*".join(["" for x in entries])
         })
+
+############################ Mappings ##########################
+
+class Mapping:
+    def __init__(self, ip, port_range_local, port_range_global):
+        (port_start_local, port_end_local) = port_range_local
+        (port_start_global, port_end_global) = port_range_global
+        self.id = None
+        self.ip = ip
+        self.port_start_local = port_start_local
+        self.port_end_local = port_end_local
+        self.port_start_global = port_start_global
+        self.port_end_global = port_end_global
+    
+    def __eq__(self, b):
+        return (
+            type(b) is Mapping and
+            self.ip == b.ip and
+            int(self.port_start_local) == int(b.port_start_local) and            
+            int(self.port_end_local) == int(b.port_end_local) and            
+            int(self.port_start_global) == int(b.port_start_global) and            
+            int(self.port_end_global) == int(b.port_end_global)
+        )
+
+    def __str__(self):
+        return "(%sIP: %s, local: (%d-%d), global: (%d-%d))" % (
+            ("#%d " % int(self.id)) if self.id is not None else "",
+            self.ip,
+            int(self.port_start_local),
+            int(self.port_end_local),
+            int(self.port_start_global),
+            int(self.port_end_global)
+        )
+
+def check_entry(entry):
+    return str(entry["enable"]) == '1' and str(entry["protocol"]) == '3'
+
+def config_to_mappings(config):
+    if "ip" not in config:
+        return None
+    ip = config["ip"]
+    if "port" in config:
+        ports = None
+        if type(config["port"]) is list:
+            ports = config["port"]
+        elif type(config["port"]) is int:
+            ports = [config["port"]]
+        else:
+            return None
         
+        return [Mapping(ip, (port, port), (port, port)) for port in ports]
+
+    if "port_local" in config and "port_global" in config:
+        p_local = config["port_local"]
+        p_global = config["port_global"]
+        ports_local = None
+        ports_global = None
+
+        if type(p_local) is list and type(p_global) is list and len(p_local) == len(p_global):
+            ports_local = p_local
+            ports_global = p_global
+        elif type(p_local) is int and type(p_global) is int:
+            ports_local = [p_local]
+            ports_global = [p_global]
+        else:
+            return None
+
+        mappings = []
+        for i in range(len(ports_local)):
+            mappings.append(Mapping(ip, (ports_local[i], ports_local[i]), (ports_global[i], ports_global[i])))
+        return mappings
+    
+    if "port_range" in config:
+        port_range = config["port_range"]
+
+        if type(port_range) is list and len(port_range) == 2:
+            return [Mapping(ip, 
+                (port_range[0], port_range[1]),
+                (port_range[0], port_range[1])
+            )]
+        else:
+            return None
+
+    if "port_range_local" in config and "port_range_global" in config:
+        port_range_local = config["port_range_local"]
+        port_range_global = config["port_range_global"]
+
+        if type(port_range_local) is list and type(port_range_global) is list and len(port_range_local) == 2 and len(port_range_global) == 2:
+            return [Mapping(ip, 
+                (port_range_local[0], port_range_local[1]),
+                (port_range_global[0], port_range_global[1])
+            )]
+        else:
+            return None
+    return None
+
+def entry_to_mapping(entry):
+    mapping = Mapping(entry["local_IP"],
+        (entry["start_port"], entry["end_port"]),
+        (entry["start_portIn"], entry["end_portIn"])
+    )
+    mapping.id = int(entry["id"])
+    return mapping
+
+######################## difference #####################
+
+class Difference:
+    def __init__(self, current_structures, maintained_identifiers, identify_structure_method, update_predicate):
+        self.to_create_identifiers = maintained_identifiers[:]
+        self.to_delete = []
+        self.to_update = []
+        self.to_do_nothing = []
+
+        for item in current_structures:
+            identifier = identify_structure_method(item)
+            if identifier in maintained_identifiers:
+                self.to_create_identifiers.remove(identifier)
+
+                if update_predicate(item):
+                    self.to_update.append(item)
+                else:
+                    self.to_do_nothing.append(item)
+            else:
+                self.to_delete.append(item)
+
+##################### main ##########################
+
+required_mappings = []
+for port_forward in config["port_forwards"]:
+    required_mappings.extend(config_to_mappings(port_forward))
+
 api = PortForwardsAPI(config["host"], config["password"])
 
-# api.create("192.168.0.210", 8080)
+all_entries = api.get_all()
 
-api.delete(3)
+managed_mappings = []
+invalid_mappings = []
 
-pprint(api.get_all())
+for entry in all_entries:
+    if entry["local_IP"] not in config["managed_hosts"]:
+        continue
+
+    mapping = entry_to_mapping(entry)
+    if not check_entry(entry):
+        invalid_mappings.append(mapping)
+        continue
+    managed_mappings.append(mapping)
+
+difference = Difference(
+    managed_mappings,
+    required_mappings,
+    lambda x: x,
+    lambda x: x not in required_mappings
+)
+
+to_delete_ids = [x.id for x in invalid_mappings]
+to_delete_ids.extend([x.id for x in difference.to_delete])
+to_delete_ids.extend([x.id for x in difference.to_update])
+
+for mapping in difference.to_do_nothing:
+    print("OK: %s" % str(mapping))
+
+for mapping in invalid_mappings:
+    print("Invalid: %s" % str(mapping))
+
+for mapping in difference.to_delete:
+    print("Delete: %s" % str(mapping))
+
+for mapping in difference.to_update:
+    print("Update: %s" % str(mapping))
+
+for mapping in difference.to_create_identifiers:
+    print("Create: %s" % str(mapping))
+
+api.delete(to_delete_ids)
+
+for mapping in difference.to_update:
+    api.create(mapping)
+
+for mapping in difference.to_create_identifiers:
+    api.create(mapping)
