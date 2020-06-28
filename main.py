@@ -2,6 +2,7 @@ from pprint import pprint
 import requests
 import json
 from xml.dom import minidom
+import sys
 
 ##################### utilities #####################
 
@@ -21,8 +22,6 @@ def read_json(file):
     if text is None:
         return None
     return json.loads(text)
-
-config = read_json("config.json")
 
 ###################### Router ######################
 
@@ -253,12 +252,39 @@ class Difference:
                 self.to_delete.append(item)
 
 ##################### main ##########################
-
+host = None
+password = None
+managed_hosts = []
 required_mappings = []
-for port_forward in config["port_forwards"]:
-    required_mappings.extend(config_to_mappings(port_forward))
 
-api = PortForwardsAPI(config["host"], config["password"])
+def read_config(config):
+    global host
+    global password
+    global managed_hosts
+    global required_mappings
+    
+    if "host" in config and host is None:
+        host = config["host"]
+    if "password" in config and password is None:
+        password = config["password"]
+
+    if "port_forwards" in config:
+        for port_forward in config["port_forwards"]:
+            required_mappings.extend(config_to_mappings(port_forward))
+    
+    if "managed_hosts" in config:
+        managed_hosts.extend(config["managed_hosts"])
+
+    if "parent" in config:
+        read_config(read_json(config["parent"]))
+
+config_file = "config.json"
+if len(sys.argv) > 1:
+    config_file = sys.argv[1]
+
+read_config(read_json(config_file))
+
+api = PortForwardsAPI(host, password)
 
 all_entries = api.get_all()
 
@@ -266,7 +292,7 @@ managed_mappings = []
 invalid_mappings = []
 
 for entry in all_entries:
-    if entry["local_IP"] not in config["managed_hosts"]:
+    if entry["local_IP"] not in managed_hosts:
         continue
 
     mapping = entry_to_mapping(entry)
